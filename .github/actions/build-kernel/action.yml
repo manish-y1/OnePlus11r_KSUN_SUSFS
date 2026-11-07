@@ -1077,7 +1077,34 @@ runs:
         echo "Applying SUSFS patches..."
         cp "$SUSFS_FOLDER/kernel_patches/fs/"* "$COMMON_KERNEL_FOLDER/fs/"
         cp "$SUSFS_FOLDER/kernel_patches/include/linux/"* "$COMMON_KERNEL_FOLDER/include/linux/"
-        
+
+        # Upstream susfs.c defines the rate-limited log macros (SUSFS_*_RL) only
+        # inside #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG, but the priority-uid-filter
+        # code calls them unconditionally. With ENABLE_LOG=n (susfs_stealth) that
+        # is an implicit-declaration error under -Werror. Add #ifndef fallbacks so
+        # the _RL macros always exist; the real definitions win when logging is on.
+        SUSFS_C="$COMMON_KERNEL_FOLDER/fs/susfs.c"
+        if [ -f "$SUSFS_C" ] && ! grep -q '#ifndef SUSFS_LOGI_RL' "$SUSFS_C"; then
+          awk '
+            { print }
+            /#define SUSFS_LOGI_RL/ { seen = 1 }
+            seen && !done && /^#endif/ {
+              print "#ifndef SUSFS_LOGI_RL"
+              print "#define SUSFS_LOGI_RL(fmt, ...)"
+              print "#endif"
+              print "#ifndef SUSFS_LOGE_RL"
+              print "#define SUSFS_LOGE_RL(fmt, ...)"
+              print "#endif"
+              done = 1
+            }
+          ' "$SUSFS_C" > "$SUSFS_C.tmp" && mv "$SUSFS_C.tmp" "$SUSFS_C"
+          if grep -q '#ifndef SUSFS_LOGI_RL' "$SUSFS_C"; then
+            echo "✅ Added SUSFS _RL log-macro fallbacks to susfs.c"
+          else
+            echo "::warning::Could not add SUSFS _RL fallbacks (susfs.c layout changed); build may fail if ENABLE_LOG is off"
+          fi
+        fi
+
         susfs_version=$(grep '#define SUSFS_VERSION' "$COMMON_KERNEL_FOLDER/include/linux/susfs.h" | awk -F'"' '{print $2}')
         echo "SUSVER=$susfs_version" >> $GITHUB_ENV
         echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
