@@ -29,7 +29,7 @@ on:
         required: true
         type: choice
         options: [O2, O3]
-        default: O2
+        default: O3
       clean_build:
         description: 'Clean build (no ccache)'
         type: boolean

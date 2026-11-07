@@ -1910,6 +1910,7 @@ runs:
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
+        CONFIG_SCHED_AUTOGROUP=y
         EOF
 
     - name: Add RUST build configs
@@ -2195,9 +2196,36 @@ runs:
             exit 1
             ;;
         esac
-        
-        
+
+        # Gaming latency cmdline (opt-in via gaming_cmdline). SM8475 core layout:
+        # 0-3 = A510 little, 4-6 = A710 mid, 7 = X2 prime. Keep IRQs on the little
+        # cores and push RCU callbacks off the performance cores for steadier frame
+        # times. RCU_NOCB_CPU is already built in; this activates it at boot.
+        # The kernel already ships CONFIG_CMDLINE + CMDLINE_EXTEND=y, so append to
+        # the existing value rather than replacing it (keeps kvm-arm.mode=protected
+        # etc.).
+        if [ "${OP_GAMING_CMDLINE:-false}" = "true" ]; then
+          EXTRA_CMDLINE="rcu_nocbs=4-7 irqaffinity=0-3"
+          CUR_CMDLINE=$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$OUT/.config")
+          NEW_CMDLINE="${CUR_CMDLINE:+$CUR_CMDLINE }$EXTRA_CMDLINE"
+          scripts/config --file "$OUT/.config" --set-str CMDLINE "$NEW_CMDLINE"
+          scripts/config --file "$OUT/.config" -e CMDLINE_EXTEND -d CMDLINE_FORCE
+          echo "GAMING_CMDLINE=$EXTRA_CMDLINE" >> "$GITHUB_ENV"
+          echo "🎮 Appended gaming cmdline: '$EXTRA_CMDLINE'"
+          echo "   Full CONFIG_CMDLINE: '$NEW_CMDLINE'"
+        else
+          echo "GAMING_CMDLINE=off" >> "$GITHUB_ENV"
+        fi
+
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
+
+        # olddefconfig can drop CMDLINE edits if a dependency is off; re-verify.
+        if [ "${OP_GAMING_CMDLINE:-false}" = "true" ]; then
+          if ! grep -q "irqaffinity=0-3" "$OUT/.config"; then
+            echo "::warning::gaming cmdline did not stick after olddefconfig; frame-time tuning not applied"
+            echo "GAMING_CMDLINE=dropped" >> "$GITHUB_ENV"
+          fi
+        fi
         
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
         KCPPFLAGS="$KCPPFLAGS -DCONFIG_OPTIMIZE_INLINING"
@@ -2543,6 +2571,8 @@ runs:
             echo "SUSFS commit date: ${{ env.SUSFS_COMMIT_DATE }}"
           fi
           echo "Optimization: ${{ inputs.optimize_level }}"
+          echo "LTO: ${{ env.OP_LTO }}"
+          echo "Gaming cmdline: ${{ env.GAMING_CMDLINE }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
           echo "=== OnePlus Features ==="
@@ -2648,6 +2678,8 @@ runs:
           echo "| Metric | Value |"
           echo "|--------|-------|"
           echo "| **Optimization** | ${{ inputs.optimize_level }} |"
+          echo "| **LTO** | ${{ env.OP_LTO }} |"
+          echo "| **Gaming cmdline** | ${{ env.GAMING_CMDLINE }} |"
           echo "| **Clean Build** | ${{ inputs.clean }} |"
           echo "| **Build Time** | ${{ steps.collect_stats.outputs.build_time }}s |"
           
