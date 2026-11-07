@@ -2229,6 +2229,46 @@ runs:
         
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
         KCPPFLAGS="$KCPPFLAGS -DCONFIG_OPTIMIZE_INLINING"
+
+        # G6: LLVM Polly (opt-in via polly) — experimental polyhedral loop
+        # optimizer. Under LTO the real optimization runs in the linker, so the
+        # flags must reach ld.lld too, not just clang. Everything is gated on a
+        # capability probe of this exact toolchain: if clang or lld would reject
+        # any flag, Polly is skipped and the normal build proceeds unchanged.
+        if [ "${OP_POLLY:-false}" = "true" ]; then
+          POLLY_FLAGS="-mllvm -polly -mllvm -polly-ast-use-context -mllvm -polly-invariant-load-hoisting -mllvm -polly-opt-fusion=max -mllvm -polly-run-inliner -mllvm -polly-vectorizer=stripmine -mllvm -polly-detect-keep-going"
+          POLLY_OK=1
+          PT=$(mktemp -d)
+          printf 'int f(int*a,int n){int s=0;int i;for(i=0;i<n;i++)s+=a[i];return s;}\n' > "$PT/t.c"
+          if ! clang $POLLY_FLAGS -O2 -c "$PT/t.c" -o "$PT/t.o" 2>"$PT/cc.log" \
+             || grep -qiE 'unknown (argument|command line)|unsupported option|did you mean' "$PT/cc.log"; then
+            POLLY_OK=0
+            echo "::warning::clang does not accept Polly flags in this toolchain; skipping Polly"
+          else
+            clang -flto -O2 -c "$PT/t.c" -o "$PT/t.bc" 2>/dev/null || true
+            ld.lld "$PT/t.bc" -o /dev/null $POLLY_FLAGS 2>"$PT/ld.log" || true
+            if grep -qiE 'unknown (argument|command line)|unsupported.*mllvm|did you mean' "$PT/ld.log"; then
+              POLLY_OK=0
+              echo "::warning::ld.lld rejected Polly flags; skipping Polly"
+            fi
+          fi
+          rm -rf "$PT"
+          if [ "$POLLY_OK" = "1" ]; then
+            KCFLAGS="$KCFLAGS $POLLY_FLAGS"
+            # Re-emit the ld-wrapper so LTO codegen runs Polly in the linker too.
+            {
+              echo '#!/bin/bash'
+              echo "ld.lld \"\$@\" --thinlto-jobs=\$(nproc --all) $POLLY_FLAGS"
+            } > "$COMMON_KERNEL_FOLDER/ld-wrapper"
+            chmod +x "$COMMON_KERNEL_FOLDER/ld-wrapper"
+            echo "POLLY_STATUS=enabled" >> "$GITHUB_ENV"
+            echo "🧪 LLVM Polly enabled (clang + LTO link)"
+          else
+            echo "POLLY_STATUS=unsupported" >> "$GITHUB_ENV"
+          fi
+        else
+          echo "POLLY_STATUS=off" >> "$GITHUB_ENV"
+        fi
         
         echo "============================================"
         echo "🔧 Build Configuration"
@@ -2572,6 +2612,7 @@ runs:
           fi
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "LTO: ${{ env.OP_LTO }}"
+          echo "Polly: ${{ env.POLLY_STATUS }}"
           echo "Gaming cmdline: ${{ env.GAMING_CMDLINE }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
@@ -2679,6 +2720,7 @@ runs:
           echo "|--------|-------|"
           echo "| **Optimization** | ${{ inputs.optimize_level }} |"
           echo "| **LTO** | ${{ env.OP_LTO }} |"
+          echo "| **Polly** | ${{ env.POLLY_STATUS }} |"
           echo "| **Gaming cmdline** | ${{ env.GAMING_CMDLINE }} |"
           echo "| **Clean Build** | ${{ inputs.clean }} |"
           echo "| **Build Time** | ${{ steps.collect_stats.outputs.build_time }}s |"
