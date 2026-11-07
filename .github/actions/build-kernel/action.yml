@@ -398,13 +398,22 @@ runs:
       run: |
         set -euo pipefail
         
-        # Set kernel vermagic for OP11r to match device stock 5.10.246
+        # Set kernel vermagic for OP11r to match device stock 5.10.246.
+        # OnePlus's scripts/setlocalversion writes "-android12-9-o-g<hash>"
+        # (no hyphen inside "android12"), so this must match that exactly.
         if [ "$OP_MODEL" = "OP11r" ]; then
           echo "::group::Setting OP11r vermagic to 5.10.246"
           cd "$COMMON_KERNEL_FOLDER"
-          sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 246/' Makefile
-          sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION = -android-12-9-o-g931a7e2ba585/' Makefile
-          echo "Kernel vermagic set to 5.10.246-android-12-9-o-g931a7e2ba585"
+          sed -i 's/^SUBLEVEL =.*/SUBLEVEL = 246/' Makefile
+          sed -i 's/^EXTRAVERSION =.*/EXTRAVERSION = -android12-9-o-g931a7e2ba585/' Makefile
+          # The stock EXTRAVERSION line is "EXTRAVERSION =" with no trailing
+          # space, so the pattern must not require one, or this silently no-ops.
+          NEW_EXTRA=$(grep '^EXTRAVERSION' Makefile)
+          if [ "$NEW_EXTRA" != "EXTRAVERSION = -android12-9-o-g931a7e2ba585" ]; then
+            echo "::error::vermagic EXTRAVERSION not applied (got: '$NEW_EXTRA')"
+            exit 1
+          fi
+          echo "Kernel vermagic set to 5.10.246-android12-9-o-g931a7e2ba585"
           echo "::endgroup::"
         fi
         
@@ -900,7 +909,13 @@ runs:
             git clone --depth 1 --branch "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_DIR"
           fi
           
-          echo "SUSFS_COMMIT_SHA=$SUSFS_BRANCH" >> $GITHUB_ENV
+          # Read the real HEAD sha and date from the clone, so a branch name
+          # passed in still records the actual commit it resolved to.
+          SUSFS_HEAD_SHA=$(git -C "$SUSFS_DIR" rev-parse HEAD 2>/dev/null || echo "$SUSFS_BRANCH")
+          SUSFS_COMMIT_DATE=$(git -C "$SUSFS_DIR" log -1 --format=%cs 2>/dev/null || echo "unknown")
+          echo "SUSFS_COMMIT_SHA=$SUSFS_HEAD_SHA" >> $GITHUB_ENV
+          echo "SUSFS_COMMIT_DATE=$SUSFS_COMMIT_DATE" >> $GITHUB_ENV
+          echo "SUSFS commit: ${SUSFS_HEAD_SHA:0:12} ($SUSFS_COMMIT_DATE)"
         fi
         echo "✅ Dependencies cloned"
         echo "::endgroup::"
@@ -983,8 +998,11 @@ runs:
         cd ..
         KSU_COMMIT_SHA=$(git rev-parse HEAD)
         echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> $GITHUB_ENV
-        
-        
+        KSU_COMMIT_DATE=$(git log -1 --format=%cs 2>/dev/null || echo "unknown")
+        echo "KSU_COMMIT_DATE=$KSU_COMMIT_DATE" >> $GITHUB_ENV
+        echo "KernelSU Next commit date: $KSU_COMMIT_DATE"
+
+
         echo "Add KSUN Configuration Settings"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
@@ -1033,7 +1051,10 @@ runs:
         cd ..
         KSU_COMMIT_SHA=$(git rev-parse HEAD)
         echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> $GITHUB_ENV
-        
+        KSU_COMMIT_DATE=$(git log -1 --format=%cs 2>/dev/null || echo "unknown")
+        echo "KSU_COMMIT_DATE=$KSU_COMMIT_DATE" >> $GITHUB_ENV
+        echo "KernelSU commit date: $KSU_COMMIT_DATE"
+
         echo "Add KSU Configuration Settings"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
@@ -1813,7 +1834,7 @@ runs:
       if: ${{ env.OP_NOMOUNT == 'true' }}
       env:
         NOMOUNT_REPO: https://github.com/maxsteeel/nomount.git
-        NOMOUNT_REF: v2.1.1
+        NOMOUNT_REF: v2.2.0
       run: |
         echo "::group::Add NoMount Support"
         set -euo pipefail
@@ -1897,7 +1918,13 @@ runs:
         echo "Customize Kernel Branding"
         cd "$COMMON_KERNEL_FOLDER"
         mkdir -p out
-        CUSTOM_LOCALVERSION="-${ANDROID_VER}-${OP_UNAME}"
+        if [ "${OP_STOCK_UNAME:-false}" = "true" ]; then
+          # No suffix: the kernel reports exactly the stock version string
+          CUSTOM_LOCALVERSION=""
+          echo "Using the stock kernel version string (uname suffix '${OP_UNAME}' not added)"
+        else
+          CUSTOM_LOCALVERSION="-${ANDROID_VER}-${OP_UNAME}"
+        fi
         echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> "$GITHUB_ENV"
 
     - name: Disable GPUEB
@@ -1915,7 +1942,28 @@ runs:
         echo "Apply Fake config.gz patch"
         cd "$COMMON_KERNEL_FOLDER"
         patch -p1 < "$KERNEL_PATCHES_FOLDER/common/fake_config.patch"
-        
+
+        # Replace the patch's sed with config_data_filter.awk, which does the
+        # same CONFIG_FAKE_DISABLE handling and also removes KernelSU/SUSFS,
+        # NoMount and Baseband Guard from /proc/config.gz (see the script).
+        cp "${{ github.action_path }}/config_data_filter.awk" scripts/config_data_filter.awk
+        python3 - kernel/Makefile <<'PY'
+        import sys
+
+        path = sys.argv[1]
+        src = open(path).read()
+        start = src.find("ifneq ($(CONFIG_OPTIONS_LIST),)\nKCONFIG_CONFIG_PATCHED := $(shell sed ")
+        end = src.find("\nendif\n", start)
+        if start < 0 or end < 0:
+            print("::error::fake_config.patch changed upstream; config_data_filter.awk not installed")
+            sys.exit(1)
+        new = ('KCONFIG_CONFIG_PATCHED := $(shell awk -v unset_opts="$(CONFIG_OPTIONS_LIST)" '
+               '-f $(srctree)/scripts/config_data_filter.awk $(KCONFIG_CONFIG) > .config.patched '
+               '&& echo ".config.patched")\n')
+        open(path, "w").write(src[:start] + new + src[end + len("\nendif\n"):])
+        PY
+        grep -n 'config_data_filter.awk' kernel/Makefile
+
         OPTIONS=()
         
         if [ "$OP_BBR" = "true" ] || [ "$OP_BBR3" = "true" ]; then
@@ -2088,12 +2136,12 @@ runs:
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" gki_defconfig
         
-        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-WILD}"
-        if [ -n "${LOCAL_LOCALVERSION:-}" ]; then
-          scripts/config --file "$OUT/.config" --set-str LOCALVERSION "${LOCAL_LOCALVERSION}"
-          scripts/config --file "$OUT/.config" -d LOCALVERSION_AUTO || true
-          sed -i 's/scm_version="$(scm_version --short)"/scm_version=""/' scripts/setlocalversion
-        fi
+        # An empty CUSTOM_LOCALVERSION (stock_uname) is kept as empty, so the
+        # fallback only applies when the branding step didn't run.
+        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION--OP-WILD}"
+        scripts/config --file "$OUT/.config" --set-str LOCALVERSION "${LOCAL_LOCALVERSION}"
+        scripts/config --file "$OUT/.config" -d LOCALVERSION_AUTO || true
+        sed -i 's/scm_version="$(scm_version --short)"/scm_version=""/' scripts/setlocalversion
         
         if [ "${{ inputs.optimize_level }}" = "O3" ]; then
           scripts/config --file "$OUT/.config" -d CC_OPTIMIZE_FOR_PERFORMANCE -e CC_OPTIMIZE_FOR_PERFORMANCE_O3
@@ -2318,7 +2366,40 @@ runs:
         KERNEL_UNAME=$(strings "$IMG" | grep -E 'Linux version.*#' | tail -n1)
         echo "Kernel Uname: $KERNEL_UNAME"
         echo "KERNEL_UNAME=$KERNEL_UNAME" >> "$GITHUB_ENV"
-        
+
+        # With stock_uname on, the version must be exactly VERSION.PATCHLEVEL.SUBLEVEL
+        # plus EXTRAVERSION from the (vermagic-adjusted) top Makefile.
+        KERNEL_RELEASE=$(echo "$KERNEL_UNAME" | awk '{print $3}')
+        STOCK_RELEASE=$(awk 'NR <= 10 && $1 == "VERSION" {v = $3} NR <= 10 && $1 == "PATCHLEVEL" {p = $3}
+          NR <= 10 && $1 == "SUBLEVEL" {s = $3} NR <= 10 && $1 == "EXTRAVERSION" {e = $3}
+          END {print v "." p "." s e}' "$COMMON_KERNEL_FOLDER/Makefile")
+        if [ "${OP_STOCK_UNAME:-false}" != "true" ]; then
+          VERSION_STATUS="custom suffix (stock_uname is off)"
+        elif [ "$KERNEL_RELEASE" = "$STOCK_RELEASE" ]; then
+          VERSION_STATUS="✅ matches stock ($STOCK_RELEASE)"
+        else
+          VERSION_STATUS="⚠️ differs from stock ($STOCK_RELEASE)"
+          echo "::warning::Kernel version '$KERNEL_RELEASE' is not the stock string '$STOCK_RELEASE'"
+        fi
+        echo "Kernel version string: $VERSION_STATUS"
+        echo "VERSION_STATUS=$VERSION_STATUS" >> "$GITHUB_ENV"
+
+        # /proc/config.gz must not mention KernelSU/SUSFS, NoMount or Baseband Guard
+        IKCONFIG="$RUNNER_TEMP/ikconfig.txt"
+        if "$COMMON_KERNEL_FOLDER/scripts/extract-ikconfig" "$IMG" > "$IKCONFIG" 2>/dev/null; then
+          if grep -nE 'CONFIG_(KSU|NOMOUNT|BBG)([_= ]|$)|KernelSU|Baseband Security Guard|baseband_guard' "$IKCONFIG"; then
+            CONFIG_GZ_STATUS="⚠️ root entries visible"
+            echo "::warning::/proc/config.gz still mentions KernelSU/SUSFS, NoMount or Baseband Guard (lines above)"
+          else
+            CONFIG_GZ_STATUS="✅ no root entries"
+          fi
+        else
+          CONFIG_GZ_STATUS="⚠️ not checked"
+          echo "::warning::Could not extract the embedded config from the Image"
+        fi
+        echo "/proc/config.gz: $CONFIG_GZ_STATUS"
+        echo "CONFIG_GZ_STATUS=$CONFIG_GZ_STATUS" >> "$GITHUB_ENV"
+
         printf 'warnings_count=%s\n' "$WARNINGS_COUNT" >> "$GITHUB_OUTPUT"
         printf 'image_sha256=%s\n' "$IMG_SHA256" >> "$GITHUB_OUTPUT"
         printf 'build_time=%s\n' "$BUILD_TIME" >> "$GITHUB_OUTPUT"
@@ -2416,18 +2497,23 @@ runs:
           echo "Kernel base: ${{ env.KERNEL_VER }}"
           echo "Kernel full: ${{ env.KERNEL_FULL_VER }}"
           echo "Kernel Uname: ${{ env.KERNEL_UNAME }}"
+          echo "Kernel Version String: ${{ env.VERSION_STATUS }}"
+          echo "config.gz Root Entries: ${{ env.CONFIG_GZ_STATUS }}"
           echo "Build User: ${{ env.BUILD_USER }}"
           echo "Build Host: ${{ env.BUILD_HOST }}"
           if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
             echo "KSUN Version: ${KSUVER:-unknown}"
             echo "KSUN commit SHA: ${KSU_SHA:-unknown}"
+            echo "KSUN commit date: ${{ env.KSU_COMMIT_DATE }}"
           else
             echo "KSU Version: ${KSUVER:-unknown}"
             echo "KSU commit SHA: ${KSU_SHA:-unknown}"
+            echo "KSU commit date: ${{ env.KSU_COMMIT_DATE }}"
           fi
           if [ "${{ env.OP_SUSFS }}" = true ]; then
             echo "SUSFS Version: ${SUSVER:-unknown}"
             echo "SUSFS commit SHA: $SUSFS_SHA"
+            echo "SUSFS commit date: ${{ env.SUSFS_COMMIT_DATE }}"
           fi
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
@@ -2446,6 +2532,7 @@ runs:
           echo "SUSFS Stealth: ${{ env.OP_SUSFS_STEALTH }}"
           echo "Droidspaces: ${{ env.OP_DS }}"
           echo "NoMount: ${{ env.OP_NOMOUNT || 'false' }}"
+          echo "Stock uname: ${{ env.OP_STOCK_UNAME || 'false' }}"
           echo ""
           echo "Image SHA256: ${{ steps.collect_stats.outputs.image_sha256 }}"
           echo "AnyKernel3 ZIP SHA256: ${{ steps.create_zip.outputs.zip_sha256 }}"
@@ -2470,33 +2557,39 @@ runs:
           echo "| **OS Version** | ${{ env.OP_OS_VERSION }} |"
           echo "| **Kernel Version** | ${{ steps.save_metadata.outputs.kernel_version }} |"
           echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
+          echo "| **Version String** | ${{ env.VERSION_STATUS }} |"
+          echo "| **config.gz Root Entries** | ${{ env.CONFIG_GZ_STATUS }} |"
           echo "| **Build User** | ${{ env.BUILD_USER }} |"
           echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
+          KSU_DATE="${{ env.KSU_COMMIT_DATE }}"
+          KSU_DATE="${KSU_DATE:-unknown}"
           if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
             echo "| **KSUN Version** | ${KSUVER:-unknown} |"
           else
             echo "| **KSU Version** | ${KSUVER:-unknown} |"
           fi
-          
+
           if [ "$KSU_SHA" != "unknown" ]; then
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
               if [ "${{ env.OP_SUSFS }}" = true ]; then
-                echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/pershoot/KernelSU-Next/commit/$KSU_SHA) |"
+                echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/pershoot/KernelSU-Next/commit/$KSU_SHA) ($KSU_DATE) |"
               else
-                echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$KSU_SHA) |"
+                echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$KSU_SHA) ($KSU_DATE) |"
               fi
             else
-              echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) |"
+              echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) ($KSU_DATE) |"
             fi
           else
             echo "| **KSU Commit** | unknown |"
           fi
-          
+
           if [ "${{ env.OP_SUSFS }}" = true ]; then
             echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
-            
+
+            SUSFS_DATE="${{ env.SUSFS_COMMIT_DATE }}"
+            SUSFS_DATE="${SUSFS_DATE:-unknown}"
             if [ "$SUSFS_SHA" != "unknown" ]; then
-              echo "| **SUSFS Commit** | [\`${SUSFS_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_SHA) |"
+              echo "| **SUSFS Commit** | [\`${SUSFS_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_SHA) ($SUSFS_DATE) |"
             else
               echo "| **SUSFS Commit** | unknown |"
             fi
@@ -2520,7 +2613,8 @@ runs:
           echo "| **SUSFS Stealth** | ${{ env.OP_SUSFS_STEALTH }} |"
           echo "| **Droidspaces** | ${{ env.OP_DS }} |"
           echo "| **NoMount** | ${{ env.OP_NOMOUNT || 'false' }} |"
-          
+          echo "| **Stock uname** | ${{ env.OP_STOCK_UNAME || 'false' }} |"
+
           echo ""
           echo "### 📊 Build Metrics"
           echo ""

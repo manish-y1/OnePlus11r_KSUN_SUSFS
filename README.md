@@ -84,6 +84,8 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 - </> **Unicode Bypass Fix**: Prevent path traversal and other detections using non-printable Unicode codepoints [Experimental]
 - 👻 **NoMount**: Built-in VFS path redirection framework ([maxsteeel/nomount](https://github.com/maxsteeel/nomount)) for mount-free module injection. Install the NoMount metamodule in your root manager to use it.
 - 🔃 **NTSync**: Provide high-performance, low-latency synchronization primitives compatible with the Windows NT kernel API
+- 🫥 **Stock uname**: The kernel reports the exact stock OnePlus version string (`5.10.246-android12-9-o-g931a7e2ba585`) with no custom suffix, so `uname -r` looks untouched
+- 🧊 **Hidden config.gz**: KernelSU/SUSFS, NoMount and Baseband Guard are stripped from the kernel's embedded config (`/proc/config.gz`), removing an obvious root-kernel tell
 
 ---
 
