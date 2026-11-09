@@ -2,11 +2,11 @@
 
 # 🔥 Wild Kernel for OnePlus 11R (CPH2487)
 
-### Android 16 • Linux 5.10.246 • KernelSU Next • SUSFS v2.3.0
+### Android 16 • Linux 5.10.246 • KernelSU Next • SUSFS v2.4.0
 
 [![KernelSU-Next](https://img.shields.io/badge/KernelSU_Next-Supported-green)](https://kernelsu-next.github.io/webpage/)
 [![KernelSU](https://img.shields.io/badge/KernelSU-Supported-green)](https://kernelsu.org/)
-[![SUSFS](https://img.shields.io/badge/SUSFS-v2.3.0-orange?logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu)
+[![SUSFS](https://img.shields.io/badge/SUSFS-v2.4.0-orange?logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu)
 [![Device](https://img.shields.io/badge/Device-OnePlus%2011R%20(CPH2487)-blue)](https://github.com/manish-y1/OnePlus_KernelSU_SUSFS)
 
 </div>

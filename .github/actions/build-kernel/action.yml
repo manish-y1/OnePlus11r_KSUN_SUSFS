@@ -1198,7 +1198,7 @@ runs:
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
             fi
             ;;
-          "v2.2.0"|"v2.3.0")
+          "v2.2.0"|"v2.3.0"|"v2.4.0")
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
               echo "KernelSU-Next (dev-susfs) carries native SUSFS support — skipping 10_enable_susfs_for_ksu.patch and fix patches"
             else
@@ -1861,7 +1861,7 @@ runs:
       if: ${{ env.OP_NOMOUNT == 'true' }}
       env:
         NOMOUNT_REPO: https://github.com/maxsteeel/nomount.git
-        NOMOUNT_REF: v2.1.1
+        NOMOUNT_REF: v2.2.0
       run: |
         echo "::group::Add NoMount Support"
         set -euo pipefail
