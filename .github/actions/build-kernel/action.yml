@@ -1861,7 +1861,7 @@ runs:
       if: ${{ env.OP_NOMOUNT == 'true' }}
       env:
         NOMOUNT_REPO: https://github.com/maxsteeel/nomount.git
-        NOMOUNT_REF: v2.2.0
+        NOMOUNT_REF: v2.1.1
       run: |
         echo "::group::Add NoMount Support"
         set -euo pipefail
@@ -1910,8 +1910,11 @@ runs:
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
-        CONFIG_SCHED_AUTOGROUP=y
         EOF
+        # Never enable CONFIG_SCHED_AUTOGROUP here: it adds a field to struct
+        # signal_struct, which is frozen in the GKI KMI (android/abi_gki_aarch64.xml),
+        # so OnePlus's prebuilt vendor modules see a shifted layout and the
+        # device boot-loops.
 
     - name: Add RUST build configs
       shell: bash
