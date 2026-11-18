@@ -86,6 +86,8 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 - 🔃 **NTSync**: Provide high-performance, low-latency synchronization primitives compatible with the Windows NT kernel API
 - 🫥 **Stock uname**: The kernel reports the exact stock OnePlus version string (`5.10.246-android12-9-o-g931a7e2ba585`) with no custom suffix, so `uname -r` looks untouched
 - 🧊 **Hidden config.gz**: KernelSU/SUSFS, NoMount and Baseband Guard are stripped from the kernel's embedded config (`/proc/config.gz`), removing an obvious root-kernel tell
+- 🐞 **Hidden ADB/JDWP sockets**: Apps can't see `/dev/socket/adbd` or reach `@jdwp-control`, so USB debugging and app-debugger state are hidden from detection (attaching a debugger to apps won't work while enabled)
+- 🔌 **Faster SDP Charging**: USB data ports (e.g. a PC) request 900 mA instead of 500 mA. Non-spec on USB 2.0 ports; boot with `oplus_sdp_900ma=0` to turn it off
 
 ---
 
