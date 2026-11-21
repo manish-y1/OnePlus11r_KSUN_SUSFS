@@ -1899,7 +1899,7 @@ runs:
       if: ${{ env.OP_NOMOUNT == 'true' }}
       env:
         NOMOUNT_REPO: https://github.com/maxsteeel/nomount.git
-        NOMOUNT_REF: v2.3.0-720
+        NOMOUNT_REF: v2.3.1
       run: |
         echo "::group::Add NoMount Support"
         set -euo pipefail
